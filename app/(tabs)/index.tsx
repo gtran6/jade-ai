@@ -1,7 +1,7 @@
 // app/(tabs)/index.tsx — Jade AI Feed Screen
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator, RefreshControl, ScrollView, StyleSheet,
+  ActivityIndicator, Linking, RefreshControl, ScrollView, StyleSheet,
   Text, TouchableOpacity, View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -36,8 +36,8 @@ function startOfDay(d: Date): Date {
 }
 
 function startOfWeek(d: Date): Date {
-  const day = d.getDay(); // 0 = Sun
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Mon
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   return new Date(d.getFullYear(), d.getMonth(), diff, 0, 0, 0, 0);
 }
 
@@ -58,6 +58,11 @@ function formatTime(iso: string): string {
 function initials(name: string | null): string {
   if (!name) return '?';
   return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+}
+
+function dial(phone: string | null) {
+  if (!phone) return;
+  Linking.openURL(`tel:${phone.replace(/\s/g, '')}`);
 }
 
 function LangToggle({ lang, setLang }: { lang: 'vi'|'en'; setLang: (l: 'vi'|'en') => void }) {
@@ -124,11 +129,12 @@ function BookingCard({ item, vi, onConfirm }: {
           >
             <Text style={[s.btnText, { color: '#F9F4EF' }]}>{vi ? 'Xác nhận' : 'Confirm'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.btn, { flex: 2, backgroundColor: C.bg3 }]} activeOpacity={0.8}>
-            <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Đổi lịch' : 'Reschedule'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[s.btn, { flex: 1, backgroundColor: C.bg3 }]} activeOpacity={0.8}>
-            <Text style={[s.btnText, { color: C.sec }]}>✆</Text>
+          <TouchableOpacity
+            style={[s.btn, { flex: 2, backgroundColor: C.bg3 }]}
+            activeOpacity={0.8}
+            onPress={() => dial(item.client_phone)}
+          >
+            <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Gọi lại' : 'Call back'}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -142,7 +148,9 @@ function BookingCard({ item, vi, onConfirm }: {
   );
 }
 
-function MissedCard({ item, vi }: { item: MissedCall; vi: boolean }) {
+function MissedCard({ item, vi, onDismiss }: {
+  item: MissedCall; vi: boolean; onDismiss: (id: string) => void;
+}) {
   const snippet = item.transcript
     ? `"${item.transcript.slice(0, 80)}${item.transcript.length > 80 ? '…' : ''}"`
     : item.reason ?? '';
@@ -177,10 +185,18 @@ function MissedCard({ item, vi }: { item: MissedCall; vi: boolean }) {
       )}
 
       <View style={s.actions}>
-        <TouchableOpacity style={[s.btn, { flex: 1, backgroundColor: C.ink }]} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[s.btn, { flex: 1, backgroundColor: C.ink }]}
+          activeOpacity={0.8}
+          onPress={() => dial(item.caller_phone)}
+        >
           <Text style={[s.btnText, { color: '#F9F4EF' }]}>{vi ? 'Gọi lại' : 'Call back'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[s.btn, { flex: 1, backgroundColor: C.bg3 }]} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[s.btn, { flex: 1, backgroundColor: C.bg3 }]}
+          activeOpacity={0.8}
+          onPress={() => onDismiss(item.id)}
+        >
           <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Bỏ qua' : 'Dismiss'}</Text>
         </TouchableOpacity>
       </View>
@@ -198,49 +214,36 @@ export default function FeedScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchFeed = useCallback(async () => {
-    const now       = new Date();
+    const now        = new Date();
     const todayStart = startOfDay(now).toISOString();
     const weekStart  = startOfWeek(now).toISOString();
 
     const [feedBookings, missedRes, todayRes, weekRes, servicesRes] = await Promise.all([
-      // Feed: recent bookings for the activity list
       supabase.from('bookings').select('*').eq('salon_id', SALON)
         .order('created_at', { ascending: false }).limit(20),
 
-      // Missed calls for activity list
+      // Exclude dismissed missed calls
       supabase.from('missed_calls').select('*').eq('salon_id', SALON)
+        .neq('status', 'dismissed')
         .order('created_at', { ascending: false }).limit(20),
 
-      // Today's bookings count (by start_time)
       supabase.from('bookings').select('id', { count: 'exact', head: true })
-        .eq('salon_id', SALON)
-        .neq('status', 'cancelled')
-        .gte('start_time', todayStart),
-
-      // This week's bookings (by start_time) with service name for revenue
+        .eq('salon_id', SALON).neq('status', 'cancelled').gte('start_time', todayStart),
       supabase.from('bookings').select('id, service')
-        .eq('salon_id', SALON)
-        .neq('status', 'cancelled')
-        .gte('start_time', weekStart),
-
-      // Services for price lookup
+        .eq('salon_id', SALON).neq('status', 'cancelled').gte('start_time', weekStart),
       supabase.from('services').select('name, price').eq('salon_id', SALON),
     ]);
 
-    // Build service price map (case-insensitive)
     const priceMap = new Map<string, number>();
     for (const svc of servicesRes.data ?? []) {
       priceMap.set(svc.name.toLowerCase().trim(), Number(svc.price));
     }
 
-    // Estimate revenue: match booking service name to service price
-    // Fall back to $0 if no match found
-    const FALLBACK_PRICE = 0;
     const weekBookings = weekRes.data ?? [];
     const revenue = weekBookings.reduce((sum: number, b: { service: string | null }) => {
       const price = b.service
-        ? (priceMap.get(b.service.toLowerCase().trim()) ?? FALLBACK_PRICE)
-        : FALLBACK_PRICE;
+        ? (priceMap.get(b.service.toLowerCase().trim()) ?? 0)
+        : 0;
       return sum + price;
     }, 0);
 
@@ -258,11 +261,7 @@ export default function FeedScreen() {
     );
 
     setFeed(merged);
-    setStats({
-      today:   todayRes.count ?? 0,
-      week:    weekBookings.length,
-      revenue,
-    });
+    setStats({ today: todayRes.count ?? 0, week: weekBookings.length, revenue });
   }, []);
 
   useEffect(() => {
@@ -278,7 +277,6 @@ export default function FeedScreen() {
       }, (payload) => {
         if (payload.new.created_at < subscribedAt) return;
         setFeed(prev => dedup([{ ...(payload.new as Booking), type: 'booking' }, ...prev]));
-        // Refetch stats on new booking so counts + revenue stay accurate
         fetchFeed();
       })
       .on('postgres_changes', {
@@ -301,6 +299,21 @@ export default function FeedScreen() {
         : item
     ));
   }, []);
+
+  const handleDismiss = useCallback(async (id: string) => {
+    // Optimistic — remove from feed immediately
+    setFeed(prev => prev.filter(item => item.id !== id));
+    // Persist to Supabase
+    const { error } = await supabase
+      .from('missed_calls')
+      .update({ status: 'dismissed' })
+      .eq('id', id);
+    if (error) {
+      console.error('Dismiss error:', error.message);
+      // Re-fetch to restore if update failed
+      fetchFeed();
+    }
+  }, [fetchFeed]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -379,7 +392,7 @@ export default function FeedScreen() {
             feed.map(item =>
               item.type === 'booking'
                 ? <BookingCard key={item.id} item={item as Booking} vi={vi} onConfirm={handleConfirm} />
-                : <MissedCard  key={item.id} item={item as MissedCall} vi={vi} />
+                : <MissedCard  key={item.id} item={item as MissedCall} vi={vi} onDismiss={handleDismiss} />
             )
           )}
         </ScrollView>
