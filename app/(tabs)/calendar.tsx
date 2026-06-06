@@ -1,9 +1,13 @@
-// app/(tabs)/calendar.tsx — Jade AI Calendar Screen
-import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+// app/(tabs)/calendar.tsx — Jade AI Calendar Screen (Supabase-wired)
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator, RefreshControl, ScrollView, StyleSheet,
+  Text, TouchableOpacity, View
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useJadeTheme } from '@/lib/ThemeContext';
+import { supabase } from '../../lib/supabase';
 
 const C = {
   bg: '#F9F4EF', bg3: '#EDE3D8',
@@ -12,25 +16,30 @@ const C = {
   accent: '#C4957A', green: '#7AAA78', red: '#BC5A48',
   todayBg: '#3D2B2B', todayText: '#FFFFFF',
   dotConf: '#7AAA78', dotPend: '#C4957A',
-  slotBg: '#FFFFFF', slotPend: '#FFF8F4', slotPendDot: '#C4957A',
   langActive: '#3D2B2B', langActiveT: '#F9F4EF',
   langIdle: 'transparent', langIdleT: '#B09080',
 };
 
-const DAYS_VI = ['CN','T2','T3','T4','T5','T6','T7'];
-const DAYS_EN = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+const SALON = 'aa567339-4580-43ff-abb1-87b02359834e';
+
+const DAYS_VI  = ['CN','T2','T3','T4','T5','T6','T7'];
+const DAYS_EN  = ['Su','Mo','Tu','We','Th','Fr','Sa'];
 const MONTHS_VI = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12'];
 const MONTHS_EN = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-const BOOKED_DAYS = new Set([3, 5, 6, 9, 10, 11, 13, 16, 18, 20]);
+interface Slot {
+  id: string;
+  time: string;       // formatted HH:MM
+  name: string;
+  service: string;
+  tech: string;
+  status: 'confirmed' | 'pending' | 'cancelled';
+}
 
-const SLOTS: Record<number, { time: string; name: string; service: string; tech: string; status: 'confirmed'|'pending' }[]> = {
-  6: [
-    { time: '2:00',  name: 'Maria Rodriguez', service: 'Gel manicure',   tech: 'Lisa',  status: 'confirmed' },
-    { time: '3:30',  name: 'Tanya Nguyen',    service: 'Dip powder',     tech: 'Maria', status: 'pending'   },
-    { time: '4:45',  name: 'Jessica Kim',     service: 'Full set',       tech: 'Lisa',  status: 'confirmed' },
-  ],
-};
+function formatHHMM(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
 function LangToggle({ lang, setLang }: { lang: 'vi'|'en'; setLang: (l: 'vi'|'en') => void }) {
   return (
@@ -56,10 +65,88 @@ export default function CalendarScreen() {
   const vi = lang === 'vi';
 
   const today = new Date();
-  const [selectedDay, setSelectedDay] = useState(today.getDate());
-  const [currentMonth] = useState(today.getMonth());
-  const [currentYear]  = useState(today.getFullYear());
+  const [selectedDay,   setSelectedDay]   = useState(today.getDate());
+  const [currentMonth]                    = useState(today.getMonth());
+  const [currentYear]                     = useState(today.getFullYear());
 
+  // Days in the current month that have at least one booking
+  const [bookedDays,    setBookedDays]    = useState<Set<number>>(new Set());
+  // Slots for the selected day
+  const [slots,         setSlots]         = useState<Slot[]>([]);
+  const [loadingMonth,  setLoadingMonth]  = useState(true);
+  const [loadingDay,    setLoadingDay]    = useState(false);
+  const [refreshing,    setRefreshing]    = useState(false);
+
+  // ── Fetch all bookings for the current month (for dot markers) ────────────
+  const fetchMonth = useCallback(async () => {
+    const start = new Date(currentYear, currentMonth, 1).toISOString();
+    const end   = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59).toISOString();
+
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('start_time')
+      .eq('salon_id', SALON)
+      .neq('status', 'cancelled')
+      .gte('start_time', start)
+      .lte('start_time', end);
+
+    if (error) { console.error('Month fetch error:', error.message); return; }
+
+    const days = new Set<number>(
+      (data ?? []).map((b: { start_time: string }) => new Date(b.start_time).getDate())
+    );
+    setBookedDays(days);
+  }, [currentYear, currentMonth]);
+
+  // ── Fetch bookings for the selected day ───────────────────────────────────
+  const fetchDay = useCallback(async (day: number) => {
+    setLoadingDay(true);
+    const start = new Date(currentYear, currentMonth, day, 0, 0, 0).toISOString();
+    const end   = new Date(currentYear, currentMonth, day, 23, 59, 59).toISOString();
+
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('id, client_name, service, start_time, technician_name, status')
+      .eq('salon_id', SALON)
+      .neq('status', 'cancelled')
+      .gte('start_time', start)
+      .lte('start_time', end)
+      .order('start_time', { ascending: true });
+
+    setLoadingDay(false);
+    if (error) { console.error('Day fetch error:', error.message); return; }
+
+    setSlots(
+      (data ?? []).map((b: any) => ({
+        id:      b.id,
+        time:    formatHHMM(b.start_time),
+        name:    b.client_name ?? '—',
+        service: b.service ?? '—',
+        tech:    b.technician_name ?? '',
+        status:  b.status,
+      }))
+    );
+  }, [currentYear, currentMonth]);
+
+  useEffect(() => {
+    fetchMonth().finally(() => setLoadingMonth(false));
+  }, [fetchMonth]);
+
+  useEffect(() => {
+    fetchDay(selectedDay);
+  }, [selectedDay, fetchDay]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([fetchMonth(), fetchDay(selectedDay)]);
+    setRefreshing(false);
+  }, [fetchMonth, fetchDay, selectedDay]);
+
+  const handleSelectDay = (day: number) => {
+    setSelectedDay(day);
+  };
+
+  // ── Calendar grid ─────────────────────────────────────────────────────────
   const firstDay    = new Date(currentYear, currentMonth, 1).getDay();
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
   const cells: (number|null)[] = [
@@ -68,7 +155,6 @@ export default function CalendarScreen() {
   ];
   while (cells.length % 7 !== 0) cells.push(null);
 
-  const slots = SLOTS[selectedDay] ?? [];
   const selectedDate = new Date(currentYear, currentMonth, selectedDay);
   const dayNames = vi
     ? ['Chủ nhật','Thứ hai','Thứ ba','Thứ tư','Thứ năm','Thứ sáu','Thứ bảy']
@@ -76,11 +162,12 @@ export default function CalendarScreen() {
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.bg }]} edges={['top']}>
+
       {/* Header */}
       <View style={s.header}>
         <View style={{ flex: 1 }}>
           <Text style={[s.eyebrow, { color: C.accent }]}>
-            {vi ? `THÁNG ${currentMonth + 1}` : (MONTHS_EN[currentMonth]).toUpperCase()}
+            {vi ? `THÁNG ${currentMonth + 1}` : MONTHS_EN[currentMonth].toUpperCase()}
           </Text>
           <Text style={[s.title, { color: C.ink }]}>
             {vi ? MONTHS_VI[currentMonth] : 'Calendar'}
@@ -89,24 +176,25 @@ export default function CalendarScreen() {
         <LangToggle lang={lang} setLang={setLang} />
       </View>
 
-      {/* Day headers */}
+      {/* Day-of-week headers */}
       <View style={s.dayHeaders}>
         {(vi ? DAYS_VI : DAYS_EN).map(d => (
           <Text key={d} style={[s.dayHdr, { color: C.mut }]}>{d}</Text>
         ))}
       </View>
 
-      {/* Grid */}
+      {/* Calendar grid */}
       <View style={s.grid}>
         {cells.map((day, i) => {
-          const isToday    = day === today.getDate() && currentMonth === today.getMonth();
+          const isToday    = day === today.getDate() && currentMonth === today.getMonth() && currentYear === today.getFullYear();
           const isSelected = day === selectedDay;
-          const hasBooking = day !== null && BOOKED_DAYS.has(day);
+          const hasBooking = day !== null && bookedDays.has(day);
+
           return (
             <TouchableOpacity
               key={i}
               style={s.cell}
-              onPress={() => day && setSelectedDay(day)}
+              onPress={() => day && handleSelectDay(day)}
               activeOpacity={day ? 0.7 : 1}
             >
               {day && (
@@ -119,15 +207,18 @@ export default function CalendarScreen() {
                     <Text style={[
                       s.dayNum,
                       { color: C.ink },
-                      isToday && { color: C.todayText, fontWeight: '700' },
-                      !isToday && day < today.getDate() && { color: C.mut },
+                      isToday   && { color: C.todayText, fontWeight: '700' },
+                      !isToday  && day < today.getDate() && currentMonth <= today.getMonth() && { color: C.mut },
                     ]}>
                       {day}
                     </Text>
                   </View>
-                  {hasBooking && (
-                    <View style={[s.dot, { backgroundColor: isToday ? C.todayText : C.dotConf }]} />
-                  )}
+                  {loadingMonth
+                    ? null
+                    : hasBooking && (
+                        <View style={[s.dot, { backgroundColor: isToday ? C.todayText : C.dotConf }]} />
+                      )
+                  }
                 </>
               )}
             </TouchableOpacity>
@@ -143,56 +234,77 @@ export default function CalendarScreen() {
             : `${dayNames[selectedDate.getDay()]}, ${MONTHS_EN[currentMonth]} ${selectedDay}`
           }
         </Text>
+        {slots.length > 0 && (
+          <Text style={[s.dayCount, { color: C.mut }]}>
+            {slots.length} {vi ? 'lịch hẹn' : slots.length === 1 ? 'appointment' : 'appointments'}
+          </Text>
+        )}
       </View>
 
       {/* Slots */}
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}>
-        {slots.length === 0 ? (
-          <Text style={[s.emptySlot, { color: C.mut }]}>
-            {vi ? 'Không có lịch hẹn' : 'No appointments'}
-          </Text>
-        ) : (
-          slots.map((slot, i) => (
-            <View key={i} style={[s.slotCard, { backgroundColor: C.card, borderColor: C.border }]}>
-              <View style={s.slotLeft}>
-                <Text style={[s.slotTime, { color: C.mut }]}>{slot.time}</Text>
+      {loadingDay ? (
+        <View style={s.loadingWrap}>
+          <ActivityIndicator color={C.accent} />
+        </View>
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.accent} />}
+        >
+          {slots.length === 0 ? (
+            <Text style={[s.emptySlot, { color: C.mut }]}>
+              {vi ? 'Không có lịch hẹn' : 'No appointments'}
+            </Text>
+          ) : (
+            slots.map((slot) => (
+              <View key={slot.id} style={[s.slotCard, { backgroundColor: C.card, borderColor: C.border }]}>
+                <View style={s.slotLeft}>
+                  <Text style={[s.slotTime, { color: C.mut }]}>{slot.time}</Text>
+                </View>
+                <View style={s.slotMid}>
+                  <Text style={[s.slotName, { color: C.ink }]}>{slot.name}</Text>
+                  <Text style={[s.slotSvc,  { color: C.sec }]}>
+                    {slot.service}{slot.tech ? ` · ${slot.tech}` : ''}
+                  </Text>
+                </View>
+                <View style={[s.slotDot, {
+                  backgroundColor: slot.status === 'confirmed' ? C.dotConf : C.dotPend
+                }]} />
               </View>
-              <View style={s.slotMid}>
-                <Text style={[s.slotName, { color: C.ink }]}>{slot.name}</Text>
-                <Text style={[s.slotSvc,  { color: C.sec }]}>{slot.service} · {slot.tech}</Text>
-              </View>
-              <View style={[s.slotDot, { backgroundColor: slot.status === 'confirmed' ? C.dotConf : C.dotPend }]} />
-            </View>
-          ))
-        )}
-      </ScrollView>
+            ))
+          )}
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
-  root:       { flex: 1 },
-  header:     { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 10 },
-  eyebrow:    { fontSize: 12, fontWeight: '700', letterSpacing: 1.2, marginBottom: 3 },
-  title:      { fontSize: 34, fontWeight: '300', letterSpacing: -0.5 },
-  langWrap:   { flexDirection: 'row', backgroundColor: '#EDE3D8', borderRadius: 100, padding: 3, gap: 2, marginTop: 4 },
-  langBtn:    { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100 },
-  langTxt:    { fontSize: 12, fontWeight: '700' },
-  dayHeaders: { flexDirection: 'row', paddingHorizontal: 14, marginBottom: 2 },
-  dayHdr:     { flex: 1, textAlign: 'center', fontSize: 13, fontWeight: '600' },
-  grid:       { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 14, marginBottom: 4 },
-  cell:       { width: '14.28%', alignItems: 'center', paddingVertical: 2 },
-  dayCircle:  { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  dayNum:     { fontSize: 15, fontWeight: '400' },
-  dot:        { width: 4, height: 4, borderRadius: 2, marginTop: 1 },
-  dayLabel:   { paddingHorizontal: 20, paddingVertical: 10, borderTopWidth: 0.5, marginTop: 4 },
-  dayLabelText:{ fontSize: 16, fontWeight: '600' },
-  emptySlot:  { textAlign: 'center', marginTop: 40, fontSize: 14 },
-  slotCard:   { flexDirection: 'row', alignItems: 'center', borderRadius: 14, padding: 14, borderWidth: 0.5, marginBottom: 8 },
-  slotLeft:   { width: 44 },
-  slotTime:   { fontSize: 14, fontWeight: '500' },
-  slotMid:    { flex: 1 },
-  slotName:   { fontSize: 15, fontWeight: '600' },
-  slotSvc:    { fontSize: 13, marginTop: 2 },
-  slotDot:    { width: 10, height: 10, borderRadius: 5 },
+  root:         { flex: 1 },
+  header:       { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 10 },
+  eyebrow:      { fontSize: 12, fontWeight: '700', letterSpacing: 1.2, marginBottom: 3 },
+  title:        { fontSize: 34, fontWeight: '300', letterSpacing: -0.5 },
+  langWrap:     { flexDirection: 'row', backgroundColor: '#EDE3D8', borderRadius: 100, padding: 3, gap: 2, marginTop: 4 },
+  langBtn:      { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100 },
+  langTxt:      { fontSize: 12, fontWeight: '700' },
+  dayHeaders:   { flexDirection: 'row', paddingHorizontal: 14, marginBottom: 2 },
+  dayHdr:       { flex: 1, textAlign: 'center', fontSize: 13, fontWeight: '600' },
+  grid:         { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 14, marginBottom: 4 },
+  cell:         { width: '14.28%', alignItems: 'center', paddingVertical: 2 },
+  dayCircle:    { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  dayNum:       { fontSize: 15, fontWeight: '400' },
+  dot:          { width: 4, height: 4, borderRadius: 2, marginTop: 1 },
+  dayLabel:     { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 10, borderTopWidth: 0.5, marginTop: 4 },
+  dayLabelText: { fontSize: 16, fontWeight: '600' },
+  dayCount:     { fontSize: 12 },
+  emptySlot:    { textAlign: 'center', marginTop: 40, fontSize: 14 },
+  slotCard:     { flexDirection: 'row', alignItems: 'center', borderRadius: 14, padding: 14, borderWidth: 0.5, marginBottom: 8 },
+  slotLeft:     { width: 44 },
+  slotTime:     { fontSize: 14, fontWeight: '500' },
+  slotMid:      { flex: 1 },
+  slotName:     { fontSize: 15, fontWeight: '600' },
+  slotSvc:      { fontSize: 13, marginTop: 2 },
+  slotDot:      { width: 10, height: 10, borderRadius: 5 },
+  loadingWrap:  { paddingTop: 40, alignItems: 'center' },
 });
