@@ -48,6 +48,10 @@ export default function TabLayout() {
         tabBarIcon: ({ color, focused }) =>
           <TabIcon emoji="◎" label={vi ? 'Khách' : 'Clients'} focused={focused} color={color} />,
       }} />
+      <Tabs.Screen name="services" options={{
+        tabBarIcon: ({ color, focused }) =>
+          <TabIcon emoji="✂" label={vi ? 'Dịch vụ' : 'Services'} focused={focused} color={color} />,
+      }} />
       <Tabs.Screen name="settings" options={{
         tabBarIcon: ({ color, focused }) =>
           <TabIcon emoji="✦" label={vi ? 'Cài đặt' : 'Settings'} focused={focused} color={color} />,
@@ -57,7 +61,7 @@ export default function TabLayout() {
 }
 
 const s = StyleSheet.create({
-  item:  { alignItems: 'center', justifyContent: 'center', paddingTop: 4, width: 72 },
+  item:  { alignItems: 'center', justifyContent: 'center', paddingTop: 4, width: 64 },
   emoji: { fontSize: 22 },
-  label: { fontSize: 11, marginTop: 2 },
+  label: { fontSize: 10, marginTop: 2 },
 });

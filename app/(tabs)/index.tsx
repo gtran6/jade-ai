@@ -31,6 +31,16 @@ function dedup(items: FeedItem[]): FeedItem[] {
   return items.filter(item => seen.has(item.id) ? false : !!seen.add(item.id));
 }
 
+function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+
+function startOfWeek(d: Date): Date {
+  const day = d.getDay(); // 0 = Sun
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Mon
+  return new Date(d.getFullYear(), d.getMonth(), diff, 0, 0, 0, 0);
+}
+
 function relativeTime(iso: string, vi: boolean): string {
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
   if (mins < 2)  return vi ? 'vừa xong' : 'just now';
@@ -188,14 +198,53 @@ export default function FeedScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchFeed = useCallback(async () => {
-    const [bookingsRes, missedRes] = await Promise.all([
+    const now       = new Date();
+    const todayStart = startOfDay(now).toISOString();
+    const weekStart  = startOfWeek(now).toISOString();
+
+    const [feedBookings, missedRes, todayRes, weekRes, servicesRes] = await Promise.all([
+      // Feed: recent bookings for the activity list
       supabase.from('bookings').select('*').eq('salon_id', SALON)
         .order('created_at', { ascending: false }).limit(20),
+
+      // Missed calls for activity list
       supabase.from('missed_calls').select('*').eq('salon_id', SALON)
         .order('created_at', { ascending: false }).limit(20),
+
+      // Today's bookings count (by start_time)
+      supabase.from('bookings').select('id', { count: 'exact', head: true })
+        .eq('salon_id', SALON)
+        .neq('status', 'cancelled')
+        .gte('start_time', todayStart),
+
+      // This week's bookings (by start_time) with service name for revenue
+      supabase.from('bookings').select('id, service')
+        .eq('salon_id', SALON)
+        .neq('status', 'cancelled')
+        .gte('start_time', weekStart),
+
+      // Services for price lookup
+      supabase.from('services').select('name, price').eq('salon_id', SALON),
     ]);
 
-    const bookings: FeedItem[] = (bookingsRes.data ?? []).map(
+    // Build service price map (case-insensitive)
+    const priceMap = new Map<string, number>();
+    for (const svc of servicesRes.data ?? []) {
+      priceMap.set(svc.name.toLowerCase().trim(), Number(svc.price));
+    }
+
+    // Estimate revenue: match booking service name to service price
+    // Fall back to $0 if no match found
+    const FALLBACK_PRICE = 0;
+    const weekBookings = weekRes.data ?? [];
+    const revenue = weekBookings.reduce((sum: number, b: { service: string | null }) => {
+      const price = b.service
+        ? (priceMap.get(b.service.toLowerCase().trim()) ?? FALLBACK_PRICE)
+        : FALLBACK_PRICE;
+      return sum + price;
+    }, 0);
+
+    const bookings: FeedItem[] = (feedBookings.data ?? []).map(
       (b: Booking) => ({ ...b, type: 'booking' as const })
     );
     const missed: FeedItem[] = (missedRes.data ?? []).map(
@@ -209,7 +258,11 @@ export default function FeedScreen() {
     );
 
     setFeed(merged);
-    setStats({ today: bookings.length, week: bookings.length, revenue: bookings.length * 65 });
+    setStats({
+      today:   todayRes.count ?? 0,
+      week:    weekBookings.length,
+      revenue,
+    });
   }, []);
 
   useEffect(() => {
@@ -217,10 +270,7 @@ export default function FeedScreen() {
   }, [fetchFeed]);
 
   useEffect(() => {
-    // Capture time before subscribing — ignore any INSERT events for rows
-    // older than this timestamp (Supabase replays recent inserts on subscribe)
     const subscribedAt = new Date().toISOString();
-
     const channel = supabase.channel(`feed:${SALON}`)
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'bookings',
@@ -228,7 +278,8 @@ export default function FeedScreen() {
       }, (payload) => {
         if (payload.new.created_at < subscribedAt) return;
         setFeed(prev => dedup([{ ...(payload.new as Booking), type: 'booking' }, ...prev]));
-        setStats(prev => ({ ...prev, today: prev.today + 1, revenue: (prev.today + 1) * 65 }));
+        // Refetch stats on new booking so counts + revenue stay accurate
+        fetchFeed();
       })
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'missed_calls',
@@ -240,7 +291,7 @@ export default function FeedScreen() {
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, []);
+  }, [fetchFeed]);
 
   const handleConfirm = useCallback(async (id: string) => {
     await supabase.from('bookings').update({ status: 'confirmed' }).eq('id', id);
@@ -262,6 +313,10 @@ export default function FeedScreen() {
     ? `Thứ ${['Chủ nhật','Hai','Ba','Tư','Năm','Sáu','Bảy'][today.getDay()]}, ${today.getDate()} tháng ${today.getMonth()+1}`
     : today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
+  const revenueStr = stats.revenue >= 1000
+    ? `$${(stats.revenue / 1000).toFixed(1)}k`
+    : `$${stats.revenue}`;
+
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.bg }]} edges={['top']}>
       <View style={s.header}>
@@ -277,9 +332,9 @@ export default function FeedScreen() {
 
       <View style={s.statsRow}>
         {[
-          { val: String(stats.today), label: vi ? 'Lịch hẹn' : 'Bookings' },
+          { val: String(stats.today), label: vi ? 'Hôm nay'  : 'Today'     },
           { val: String(stats.week),  label: vi ? 'Tuần này'  : 'This week' },
-          { val: `$${(stats.revenue/1000).toFixed(1)}k`, label: vi ? 'Doanh thu' : 'Revenue' },
+          { val: revenueStr,          label: vi ? 'Doanh thu' : 'Revenue'   },
         ].map((st, i) => (
           <View key={i} style={[s.statCard, { backgroundColor: C.bg3 }]}>
             <Text style={[s.statVal,   { color: C.ink }]}>{st.val}</Text>
