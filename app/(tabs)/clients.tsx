@@ -1,27 +1,95 @@
-// app/(tabs)/clients.tsx — Jade AI Clients Screen
-import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+// app/(tabs)/clients.tsx — Jade AI Clients Screen (Supabase-derived)
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator, RefreshControl, ScrollView, StyleSheet,
+  Text, TextInput, TouchableOpacity, View
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useJadeTheme } from '@/lib/ThemeContext';
+import { supabase } from '../../lib/supabase';
 
 const C = {
   bg: '#F9F4EF', bg3: '#EDE3D8',
   card: '#FFFFFF', ink: '#3D2B2B', sec: '#8A6A58',
   mut: '#B09080', faint: '#D4BFB0', border: 'rgba(61,43,43,0.10)',
   accent: '#C4957A',
-  searchBg: '#EDE3D8',
   langActive: '#3D2B2B', langActiveT: '#F9F4EF',
   langIdle: 'transparent', langIdleT: '#B09080',
 };
 
-const CLIENTS = [
-  { id: '1', name: 'Maria Rodriguez', phone: '+1 (512) 445-9021', visits: 7,  spend: 420, fave: 'Gel manicure',  initials: 'MR', color: '#EDE3D8', textColor: '#7A5A48' },
-  { id: '2', name: 'Tanya Nguyen',    phone: '+1 (512) 334-8821', visits: 12, spend: 780, fave: 'Dip powder',    initials: 'TN', color: '#EAE0F0', textColor: '#5A3A8A' },
-  { id: '3', name: 'Jessica Kim',     phone: '+1 (512) 229-4401', visits: 4,  spend: 290, fave: 'Full set acrylic', initials: 'JK', color: '#E8F0F8', textColor: '#2A4A7A' },
-  { id: '4', name: 'Linda Tran',      phone: '+1 (512) 881-3320', visits: 9,  spend: 540, fave: 'Pedicure',      initials: 'LT', color: '#2A4A2A', textColor: '#FFFFFF' },
-  { id: '5', name: 'Sarah Johnson',   phone: '+1 (512) 774-9901', visits: 2,  spend: 110, fave: 'Manicure',      initials: 'SJ', color: '#F5EEE8', textColor: '#8A6A48' },
+const SALON = 'aa567339-4580-43ff-abb1-87b02359834e';
+
+const AVI_COLORS = [
+  { bg: '#EDE3D8', text: '#7A5A48' },
+  { bg: '#EAE0F0', text: '#5A3A8A' },
+  { bg: '#E8F0F8', text: '#2A4A7A' },
+  { bg: '#2A4A2A', text: '#FFFFFF' },
+  { bg: '#F5EEE8', text: '#8A6A48' },
+  { bg: '#F0E8E0', text: '#6A4A38' },
 ];
+
+interface Client {
+  phone: string;
+  name: string;
+  visits: number;
+  lastVisit: string;   // ISO string
+  favService: string;
+  aviColor: { bg: string; text: string };
+  initials: string;
+}
+
+function deriveClients(bookings: any[]): Client[] {
+  const map = new Map<string, { name: string; visits: any[]; services: string[] }>();
+
+  for (const b of bookings) {
+    const phone = b.client_phone ?? 'unknown';
+    if (!map.has(phone)) {
+      map.set(phone, { name: b.client_name ?? '—', visits: [], services: [] });
+    }
+    const entry = map.get(phone)!;
+    entry.visits.push(b.start_time);
+    if (b.service) entry.services.push(b.service);
+  }
+
+  const clients: Client[] = [];
+  let colorIdx = 0;
+
+  for (const [phone, data] of map.entries()) {
+    const sorted = [...data.visits].sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+
+    // Most frequent service
+    const freq = new Map<string, number>();
+    for (const svc of data.services) freq.set(svc, (freq.get(svc) ?? 0) + 1);
+    const favService = [...freq.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
+
+    const nameParts = data.name.trim().split(' ');
+    const initials = nameParts.length >= 2
+      ? (nameParts[0][0] + nameParts[nameParts.length - 1][0]).toUpperCase()
+      : data.name.slice(0, 2).toUpperCase();
+
+    clients.push({
+      phone,
+      name: data.name,
+      visits: data.visits.length,
+      lastVisit: sorted[0] ?? '',
+      favService,
+      aviColor: AVI_COLORS[colorIdx % AVI_COLORS.length],
+      initials,
+    });
+    colorIdx++;
+  }
+
+  return clients.sort((a, b) => new Date(b.lastVisit).getTime() - new Date(a.lastVisit).getTime());
+}
+
+function formatLastVisit(iso: string, vi: boolean): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return vi
+    ? `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
 
 function LangToggle({ lang, setLang }: { lang: 'vi'|'en'; setLang: (l: 'vi'|'en') => void }) {
   return (
@@ -46,14 +114,41 @@ export default function ClientsScreen() {
   const { lang, setLang } = useJadeTheme();
   const vi = lang === 'vi';
 
-  const [search, setSearch] = useState('');
-  const filtered = CLIENTS.filter(c =>
+  const [clients,    setClients]    = useState<Client[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search,     setSearch]     = useState('');
+
+  const fetchClients = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('client_phone, client_name, service, start_time')
+      .eq('salon_id', SALON)
+      .not('client_phone', 'is', null)
+      .order('start_time', { ascending: false });
+
+    if (error) { console.error('Clients fetch error:', error.message); return; }
+    setClients(deriveClients(data ?? []));
+  }, []);
+
+  useEffect(() => {
+    fetchClients().finally(() => setLoading(false));
+  }, [fetchClients]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchClients();
+    setRefreshing(false);
+  }, [fetchClients]);
+
+  const filtered = clients.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.phone.includes(search)
   );
 
-  const avgSpend  = Math.round(CLIENTS.reduce((a, c) => a + c.spend, 0) / CLIENTS.length);
-  const avgVisits = Math.round(CLIENTS.reduce((a, c) => a + c.visits, 0) / CLIENTS.length);
+  const avgVisits = clients.length
+    ? Math.round(clients.reduce((a, c) => a + c.visits, 0) / clients.length)
+    : 0;
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.bg }]} edges={['top']}>
@@ -69,7 +164,7 @@ export default function ClientsScreen() {
       </View>
 
       {/* Search */}
-      <View style={[s.searchWrap, { backgroundColor: C.searchBg }]}>
+      <View style={[s.searchWrap, { backgroundColor: C.bg3 }]}>
         <Text style={[s.searchIcon, { color: C.mut }]}>⌕</Text>
         <TextInput
           style={[s.searchInput, { color: C.ink }]}
@@ -83,9 +178,8 @@ export default function ClientsScreen() {
       {/* Stats */}
       <View style={s.statsRow}>
         {[
-          { val: String(CLIENTS.length), label: vi ? 'Khách hàng' : 'Total',      sub: vi ? 'Total clients' : '' },
-          { val: `$${avgSpend}`,         label: vi ? 'TB chi tiêu' : 'Avg spend',  sub: vi ? 'Avg spend'     : '' },
-          { val: String(avgVisits),      label: vi ? 'TB lần đến'  : 'Avg visits', sub: vi ? 'Avg visits'    : '' },
+          { val: String(clients.length), label: vi ? 'Khách hàng' : 'Total'      },
+          { val: String(avgVisits),      label: vi ? 'TB lần đến'  : 'Avg visits' },
         ].map((st, i) => (
           <View key={i} style={[s.statCard, { backgroundColor: C.bg3 }]}>
             <Text style={[s.statVal,   { color: C.ink }]}>{st.val}</Text>
@@ -95,31 +189,51 @@ export default function ClientsScreen() {
       </View>
 
       {/* List */}
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 100 }}>
-        {filtered.map(client => (
-          <TouchableOpacity
-            key={client.id}
-            style={[s.card, { backgroundColor: C.card, borderColor: C.border }]}
-            activeOpacity={0.75}
-          >
-            <View style={s.cardRow}>
-              <View style={[s.avi, { backgroundColor: client.color }]}>
-                <Text style={[s.aviText, { color: client.textColor }]}>{client.initials}</Text>
-              </View>
-              <View style={s.cardMid}>
-                <Text style={[s.clientName, { color: C.ink }]}>{client.name}</Text>
-                <Text style={[s.clientFave, { color: C.sec }]}>{client.fave}</Text>
-              </View>
-              <View style={s.cardRight}>
-                <Text style={[s.spend,  { color: C.ink }]}>${client.spend}</Text>
-                <Text style={[s.visits, { color: C.mut }]}>
-                  {client.visits} {vi ? 'lần' : 'visits'}
-                </Text>
-              </View>
+      {loading ? (
+        <View style={s.loadingWrap}>
+          <ActivityIndicator color={C.accent} size="large" />
+          <Text style={[s.loadingText, { color: C.mut }]}>{vi ? 'Đang tải...' : 'Loading...'}</Text>
+        </View>
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 100 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.accent} />}
+        >
+          {filtered.length === 0 ? (
+            <View style={s.emptyWrap}>
+              <Text style={[s.emptyText, { color: C.mut }]}>
+                {search ? (vi ? 'Không tìm thấy' : 'No results') : (vi ? 'Chưa có khách hàng' : 'No clients yet')}
+              </Text>
             </View>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+          ) : (
+            filtered.map(client => (
+              <TouchableOpacity
+                key={client.phone}
+                style={[s.card, { backgroundColor: C.card, borderColor: C.border }]}
+                activeOpacity={0.75}
+              >
+                <View style={s.cardRow}>
+                  <View style={[s.avi, { backgroundColor: client.aviColor.bg }]}>
+                    <Text style={[s.aviText, { color: client.aviColor.text }]}>{client.initials}</Text>
+                  </View>
+                  <View style={s.cardMid}>
+                    <Text style={[s.clientName, { color: C.ink }]}>{client.name}</Text>
+                    <Text style={[s.clientFave, { color: C.sec }]}>{client.favService}</Text>
+                    <Text style={[s.clientLast, { color: C.mut }]}>
+                      {vi ? 'Lần cuối: ' : 'Last: '}{formatLastVisit(client.lastVisit, vi)}
+                    </Text>
+                  </View>
+                  <View style={s.cardRight}>
+                    <Text style={[s.visits, { color: C.ink }]}>{client.visits}</Text>
+                    <Text style={[s.visitsLabel, { color: C.mut }]}>{vi ? 'lần' : 'visits'}</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -146,7 +260,12 @@ const s = StyleSheet.create({
   cardMid:     { flex: 1 },
   clientName:  { fontSize: 16, fontWeight: '600' },
   clientFave:  { fontSize: 13, marginTop: 2 },
+  clientLast:  { fontSize: 12, marginTop: 2 },
   cardRight:   { alignItems: 'flex-end' },
-  spend:       { fontSize: 16, fontWeight: '600' },
-  visits:      { fontSize: 12, marginTop: 2 },
+  visits:      { fontSize: 20, fontWeight: '400' },
+  visitsLabel: { fontSize: 11, marginTop: 2 },
+  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingTop: 60 },
+  loadingText: { fontSize: 14 },
+  emptyWrap:   { alignItems: 'center', paddingTop: 60 },
+  emptyText:   { fontSize: 14 },
 });
