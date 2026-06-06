@@ -108,17 +108,17 @@ function BookingCard({ item, vi, onConfirm }: {
       {isNew ? (
         <View style={s.actions}>
           <TouchableOpacity
-            style={[s.btn, { backgroundColor: C.ink }]}
+            style={[s.btn, { flex: 2, backgroundColor: C.ink }]}
             activeOpacity={0.8}
             onPress={() => onConfirm(item.id)}
           >
             <Text style={[s.btnText, { color: '#F9F4EF' }]}>{vi ? 'Xác nhận' : 'Confirm'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.btn, { backgroundColor: C.bg3 }]} activeOpacity={0.8}>
+          <TouchableOpacity style={[s.btn, { flex: 2, backgroundColor: C.bg3 }]} activeOpacity={0.8}>
             <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Đổi lịch' : 'Reschedule'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.btnSm, { backgroundColor: C.bg3 }]} activeOpacity={0.8}>
-            <Text style={{ color: C.sec, fontSize: 20 }}>✆</Text>
+          <TouchableOpacity style={[s.btn, { flex: 1, backgroundColor: C.bg3 }]} activeOpacity={0.8}>
+            <Text style={[s.btnText, { color: C.sec }]}>✆</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -167,10 +167,10 @@ function MissedCard({ item, vi }: { item: MissedCall; vi: boolean }) {
       )}
 
       <View style={s.actions}>
-        <TouchableOpacity style={[s.btn, { backgroundColor: C.ink }]} activeOpacity={0.8}>
+        <TouchableOpacity style={[s.btn, { flex: 1, backgroundColor: C.ink }]} activeOpacity={0.8}>
           <Text style={[s.btnText, { color: '#F9F4EF' }]}>{vi ? 'Gọi lại' : 'Call back'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[s.btn, { backgroundColor: C.bg3 }]} activeOpacity={0.8}>
+        <TouchableOpacity style={[s.btn, { flex: 1, backgroundColor: C.bg3 }]} activeOpacity={0.8}>
           <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Bỏ qua' : 'Dismiss'}</Text>
         </TouchableOpacity>
       </View>
@@ -216,13 +216,17 @@ export default function FeedScreen() {
     fetchFeed().finally(() => setLoading(false));
   }, [fetchFeed]);
 
-  // Subscribe after initial fetch to avoid replayed INSERT events causing duplicates
   useEffect(() => {
+    // Capture time before subscribing — ignore any INSERT events for rows
+    // older than this timestamp (Supabase replays recent inserts on subscribe)
+    const subscribedAt = new Date().toISOString();
+
     const channel = supabase.channel(`feed:${SALON}`)
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'bookings',
         filter: `salon_id=eq.${SALON}`,
       }, (payload) => {
+        if (payload.new.created_at < subscribedAt) return;
         setFeed(prev => dedup([{ ...(payload.new as Booking), type: 'booking' }, ...prev]));
         setStats(prev => ({ ...prev, today: prev.today + 1, revenue: (prev.today + 1) * 65 }));
       })
@@ -230,6 +234,7 @@ export default function FeedScreen() {
         event: 'INSERT', schema: 'public', table: 'missed_calls',
         filter: `salon_id=eq.${SALON}`,
       }, (payload) => {
+        if (payload.new.created_at < subscribedAt) return;
         setFeed(prev => dedup([{ ...(payload.new as MissedCall), type: 'missed' }, ...prev]));
       })
       .subscribe();
@@ -259,7 +264,6 @@ export default function FeedScreen() {
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.bg }]} edges={['top']}>
-      {/* Header */}
       <View style={s.header}>
         <View style={s.headerRow}>
           <View style={{ flex: 1 }}>
@@ -271,11 +275,10 @@ export default function FeedScreen() {
         </View>
       </View>
 
-      {/* Stats */}
       <View style={s.statsRow}>
         {[
-          { val: String(stats.today),   label: vi ? 'Lịch hẹn'  : 'Bookings'  },
-          { val: String(stats.week),    label: vi ? 'Tuần này'   : 'This week' },
+          { val: String(stats.today), label: vi ? 'Lịch hẹn' : 'Bookings' },
+          { val: String(stats.week),  label: vi ? 'Tuần này'  : 'This week' },
           { val: `$${(stats.revenue/1000).toFixed(1)}k`, label: vi ? 'Doanh thu' : 'Revenue' },
         ].map((st, i) => (
           <View key={i} style={[s.statCard, { backgroundColor: C.bg3 }]}>
@@ -285,7 +288,6 @@ export default function FeedScreen() {
         ))}
       </View>
 
-      {/* Feed header */}
       <View style={s.feedHeader}>
         <Text style={[s.feedTitle, { color: C.accent }]}>
           {vi ? 'LỊCH ĐẶT HẸN' : 'BOOKING ACTIVITY'}
@@ -363,8 +365,7 @@ const s = StyleSheet.create({
   pillText:   { fontSize: 11, fontWeight: '600' },
   timeText:   { fontSize: 13 },
   actions:    { flexDirection: 'row', gap: 7 },
-  btn:        { flex: 1, borderRadius: 11, paddingVertical: 14, alignItems: 'center' },
-  btnSm:      { borderRadius: 11, paddingVertical: 14, paddingHorizontal: 14, alignItems: 'center' },
+  btn:        { borderRadius: 11, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
   btnText:    { fontSize: 15, fontWeight: '600' },
   smsRow:     { flexDirection: 'row', alignItems: 'center' },
   smsText:    { fontSize: 13, fontWeight: '600' },
