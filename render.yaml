@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: jade-ai
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      - key: SALON_ID
+        sync: false
+      - key: SALON_TZ
+        sync: false
+      - key: APP_ENV
+        sync: false
+    healthCheckPath: /health
