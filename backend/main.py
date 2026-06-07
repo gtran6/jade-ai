@@ -169,6 +169,7 @@ async def vapi_chat(request: Request):
     body = await request.json()
     messages = body.get("messages", [])
     call_id  = body.get("call", {}).get("id")
+    log.info(f"Vapi chat — messages: {json.dumps(messages[-3:])}")  # last 3 messages
 
     # Load services for the prompt
     services = get_salon_services()
@@ -189,11 +190,12 @@ async def vapi_chat(request: Request):
     try:
         response = claude.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=300,
+            max_tokens=500,
             system=system,
             messages=anthropic_messages,
         )
         text = response.content[0].text
+        log.info(f"Claude response: {text}")
     except Exception as e:
         log.error(f"Claude error: {e}")
         text = "I'm sorry, I'm having a technical issue. Please call back in a moment."
