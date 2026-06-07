@@ -147,19 +147,22 @@ YOUR GOAL: Collect these four things to complete a booking:
 1. Client's full name
 2. Service they want
 3. Preferred date and time
-4. Preferred technician (or "any" is fine)
+4. Preferred technician (or "any" is fine — default to "any" if not mentioned)
 
-RULES:
-- Be warm, concise, and professional. Keep responses under 2 sentences.
-- If they ask for a service not on the list, apologize and offer the closest match.
+CRITICAL RULES:
+- You only get ONE response per caller turn. Ask for ALL missing information in a single response — never ask one question at a time.
+- If the caller gives you name + service + time but not technician, default to "any" and confirm immediately — do not ask.
+- If multiple pieces are missing, list them all in one question: "Could I get your name, preferred service, and what day works for you?"
+- Be warm, concise, and professional. Keep responses under 3 sentences.
+- If they ask for a service not on the list, offer the closest match.
 - If they want a time outside business hours, suggest the nearest available slot.
-- Once you have all four pieces of information, confirm the details back and say you're booking it.
+- Once you have name + service + date/time (technician defaults to "any"), confirm ALL details back in one sentence and say you're booking it.
 - After confirming, output EXACTLY this JSON on its own line (the system will parse it):
   BOOKING_COMPLETE:{{"client_name":"...","service":"...","date":"YYYY-MM-DD","time":"HH:MM","technician":"..."}}
-- If the caller wants to cancel, is confused, or hangs up without booking, output:
+- If the caller wants to cancel or is confused, output:
   MISSED_CALL:{{"reason":"..."}}
 
-Do not output the JSON until you have confirmed all details with the caller."""
+Do not output the JSON until you have confirmed all details with the caller. Technician always defaults to "any" if not specified."""
 
 # ── Vapi chat endpoint (custom LLM) ──────────────────────────────────────────
 
