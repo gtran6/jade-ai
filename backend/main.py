@@ -189,7 +189,7 @@ async def vapi_chat(request: Request):
 
     try:
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=500,
             system=system,
             messages=anthropic_messages,
