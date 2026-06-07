@@ -163,7 +163,7 @@ Do not output the JSON until you have confirmed all details with the caller."""
 
 # ── Vapi chat endpoint (custom LLM) ──────────────────────────────────────────
 
-@app.post("/vapi/chat")
+@app.post("/vapi/chat/chat/completions")
 async def vapi_chat(request: Request):
     """Vapi calls this as a custom LLM endpoint."""
     body = await request.json()
