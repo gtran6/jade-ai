@@ -201,6 +201,14 @@ async def vapi_chat(request: Request):
 
     # ── Parse booking completion ────────────────────────────────────────────
     end_call = False
+
+    # Guard against double-call: if booking already exists for this call_id, skip
+    if call_id and "BOOKING_COMPLETE:" in text:
+        existing = supabase.table("bookings").select("id").eq("call_id", call_id).execute()
+        if existing.data:
+            log.info(f"Duplicate call_id {call_id} — skipping booking, stripping JSON from text")
+            text = text.split("BOOKING_COMPLETE:")[0].strip()
+
     if "BOOKING_COMPLETE:" in text:
         try:
             json_str = text.split("BOOKING_COMPLETE:")[1].split("\n")[0].strip()
