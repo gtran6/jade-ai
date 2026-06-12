@@ -11,15 +11,17 @@ import { Booking, FeedItem, MissedCall, supabase } from '../../lib/supabase';
 
 const C = {
   bg: '#F9F4EF', bg3: '#EDE3D8',
-  card: '#FFFFFF', cardMiss: '#FFF3EE',
+  card: '#FFFFFF', cardMiss: '#FFF3EE', cardPending: '#FFF8EE',
   ink: '#3D2B2B', sec: '#8A6A58', mut: '#B09080', faint: '#D4BFB0',
   border: 'rgba(61,43,43,0.10)',
-  accent: '#C4957A', green: '#7AAA78', red: '#BC5A48',
+  accent: '#C4957A', green: '#7AAA78', red: '#BC5A48', orange: '#E8923A',
   pillNew: '#EAF4EA', pillNewT: '#2A6A28',
   pillConf: '#E8E0F0', pillConfT: '#4A2A6A',
   pillMiss: '#FDE8E4', pillMissT: '#BC5A48',
+  pillPend: '#FEF0E0', pillPendT: '#8A4A10',
   aviBg: '#EDE3D8', aviT: '#7A5A48',
   aviMiss: '#F5DDD5', aviMissT: '#8A3A2A',
+  aviPend: '#FDE8C8', aviPendT: '#8A4A10',
   langActive: '#3D2B2B', langActiveT: '#F9F4EF',
   langIdle: 'transparent', langIdleT: '#B09080',
 };
@@ -84,18 +86,11 @@ function LangToggle({ lang, setLang }: { lang: 'vi'|'en'; setLang: (l: 'vi'|'en'
   );
 }
 
-function BookingCard({ item, vi, onConfirm }: {
-  item: Booking; vi: boolean; onConfirm: (id: string) => void;
-}) {
-  const isNew = item.status === 'pending' ||
-    (Date.now() - new Date(item.created_at).getTime()) < 5 * 60 * 1000;
+// ── Confirmed booking card ────────────────────────────────────────────────────
 
+function BookingCard({ item, vi }: { item: Booking; vi: boolean }) {
   return (
-    <View style={[
-      s.card,
-      { backgroundColor: C.card, borderColor: isNew ? C.green : C.border },
-      isNew && { borderWidth: 1.5 },
-    ]}>
+    <View style={[s.card, { backgroundColor: C.card, borderColor: C.border }]}>
       <View style={s.cardTop}>
         <View style={s.cardLeft}>
           <View style={[s.avi, { backgroundColor: C.aviBg }]}>
@@ -110,43 +105,78 @@ function BookingCard({ item, vi, onConfirm }: {
         </View>
         <Text style={[s.relTime, { color: C.mut }]}>{relativeTime(item.created_at, vi)}</Text>
       </View>
-
       <View style={s.metaRow}>
-        <View style={[s.pill, { backgroundColor: isNew ? C.pillNew : C.pillConf }]}>
-          <Text style={[s.pillText, { color: isNew ? C.pillNewT : C.pillConfT }]}>
-            {isNew ? (vi ? 'Mới' : 'New') : (vi ? 'Đã xác nhận' : 'Confirmed')}
+        <View style={[s.pill, { backgroundColor: C.pillConf }]}>
+          <Text style={[s.pillText, { color: C.pillConfT }]}>
+            {vi ? 'Đã xác nhận' : 'Confirmed'}
           </Text>
         </View>
         <Text style={[s.timeText, { color: C.sec }]}>📅 {formatTime(item.start_time)}</Text>
       </View>
-
-      {isNew ? (
-        <View style={s.actions}>
-          <TouchableOpacity
-            style={[s.btn, { flex: 2, backgroundColor: C.ink }]}
-            activeOpacity={0.8}
-            onPress={() => onConfirm(item.id)}
-          >
-            <Text style={[s.btnText, { color: '#F9F4EF' }]}>{vi ? 'Xác nhận' : 'Confirm'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[s.btn, { flex: 2, backgroundColor: C.bg3 }]}
-            activeOpacity={0.8}
-            onPress={() => dial(item.client_phone)}
-          >
-            <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Gọi lại' : 'Call back'}</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <View style={s.smsRow}>
-          <Text style={[s.smsText, { color: C.green }]}>
-            ✓ {vi ? 'Đã gửi SMS' : 'SMS sent'}
-          </Text>
-        </View>
-      )}
+      <View style={s.smsRow}>
+        <Text style={[s.smsText, { color: C.green }]}>
+          ✓ {vi ? 'Đã đặt lịch' : 'Booked'}
+        </Text>
+      </View>
     </View>
   );
 }
+
+// ── Pending owner card (slot conflict) ───────────────────────────────────────
+
+function PendingOwnerCard({ item, vi, onDismiss }: {
+  item: Booking; vi: boolean; onDismiss: (id: string) => void;
+}) {
+  return (
+    <View style={[s.card, { backgroundColor: C.cardPending, borderColor: `${C.orange}66`, borderWidth: 1.5 }]}>
+      <View style={s.cardTop}>
+        <View style={s.cardLeft}>
+          <View style={[s.avi, { backgroundColor: C.aviPend }]}>
+            <Text style={[s.aviText, { color: C.aviPendT }]}>{initials(item.client_name)}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.clientName, { color: C.ink }]}>{item.client_name ?? '—'}</Text>
+            <Text style={[s.clientSub,  { color: C.sec }]}>{item.service ?? '—'}</Text>
+          </View>
+        </View>
+        <Text style={[s.relTime, { color: C.mut }]}>{relativeTime(item.created_at, vi)}</Text>
+      </View>
+      <View style={s.metaRow}>
+        <View style={[s.pill, { backgroundColor: C.pillPend }]}>
+          <Text style={[s.pillText, { color: C.pillPendT }]}>
+            {vi ? 'Cần đổi lịch' : 'Needs reschedule'}
+          </Text>
+        </View>
+      </View>
+      <View style={[s.snippet, { borderLeftColor: C.orange }]}>
+        <Text style={[s.snippetText, { color: C.sec }]}>
+          {vi
+            ? `Khách muốn đặt ${item.service ?? '—'} lúc ${formatTime(item.start_time)} nhưng khung giờ đã có người.`
+            : `Caller wanted ${item.service ?? '—'} at ${formatTime(item.start_time)} but no slot was available.`
+          }
+        </Text>
+      </View>
+      <View style={s.actions}>
+        <TouchableOpacity
+          style={[s.btn, { flex: 2, backgroundColor: C.ink }]}
+          activeOpacity={0.8}
+          onPress={() => dial(item.client_phone)}
+        >
+          <Text style={[s.btnText, { color: '#F9F4EF' }]}>{vi ? 'Gọi lại' : 'Call back'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.btn, { flex: 1, backgroundColor: C.bg3 }]}
+          activeOpacity={0.8}
+          onPress={() => onDismiss(item.id)}
+        >
+          <Text style={[s.btnText, { color: C.sec }]}>{vi ? 'Bỏ qua' : 'Dismiss'}</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+// ── Missed call card ──────────────────────────────────────────────────────────
 
 function MissedCard({ item, vi, onDismiss }: {
   item: MissedCall; vi: boolean; onDismiss: (id: string) => void;
@@ -171,19 +201,16 @@ function MissedCard({ item, vi, onDismiss }: {
         </View>
         <Text style={[s.relTime, { color: C.mut }]}>{relativeTime(item.created_at, vi)}</Text>
       </View>
-
       <View style={s.metaRow}>
         <View style={[s.pill, { backgroundColor: C.pillMiss }]}>
           <Text style={[s.pillText, { color: C.pillMissT }]}>{vi ? 'Lỡ' : 'Missed'}</Text>
         </View>
       </View>
-
       {!!snippet && (
         <View style={[s.snippet, { borderLeftColor: C.faint }]}>
           <Text style={[s.snippetText, { color: C.mut }]}>{snippet}</Text>
         </View>
       )}
-
       <View style={s.actions}>
         <TouchableOpacity
           style={[s.btn, { flex: 1, backgroundColor: C.ink }]}
@@ -204,6 +231,8 @@ function MissedCard({ item, vi, onDismiss }: {
   );
 }
 
+// ── Feed Screen ───────────────────────────────────────────────────────────────
+
 export default function FeedScreen() {
   const { lang, setLang } = useJadeTheme();
   const vi = lang === 'vi';
@@ -221,16 +250,13 @@ export default function FeedScreen() {
     const [feedBookings, missedRes, todayRes, weekRes, servicesRes] = await Promise.all([
       supabase.from('bookings').select('*').eq('salon_id', SALON)
         .order('created_at', { ascending: false }).limit(20),
-
-      // Exclude dismissed missed calls
       supabase.from('missed_calls').select('*').eq('salon_id', SALON)
         .neq('status', 'dismissed')
         .order('created_at', { ascending: false }).limit(20),
-
       supabase.from('bookings').select('id', { count: 'exact', head: true })
-        .eq('salon_id', SALON).neq('status', 'cancelled').gte('start_time', todayStart),
+        .eq('salon_id', SALON).eq('status', 'confirmed').gte('start_time', todayStart),
       supabase.from('bookings').select('id, service')
-        .eq('salon_id', SALON).neq('status', 'cancelled').gte('start_time', weekStart),
+        .eq('salon_id', SALON).eq('status', 'confirmed').gte('start_time', weekStart),
       supabase.from('services').select('name, price').eq('salon_id', SALON),
     ]);
 
@@ -291,28 +317,15 @@ export default function FeedScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [fetchFeed]);
 
-  const handleConfirm = useCallback(async (id: string) => {
-    await supabase.from('bookings').update({ status: 'confirmed' }).eq('id', id);
-    setFeed(prev => prev.map(item =>
-      item.type === 'booking' && item.id === id
-        ? { ...item, status: 'confirmed' as const }
-        : item
-    ));
+  const handleDismissBooking = useCallback(async (id: string) => {
+    setFeed(prev => prev.filter(item => item.id !== id));
+    await supabase.from('bookings').update({ status: 'cancelled' }).eq('id', id);
   }, []);
 
-  const handleDismiss = useCallback(async (id: string) => {
-    // Optimistic — remove from feed immediately
+  const handleDismissMissed = useCallback(async (id: string) => {
     setFeed(prev => prev.filter(item => item.id !== id));
-    // Persist to Supabase
-    const { error } = await supabase
-      .from('missed_calls')
-      .update({ status: 'dismissed' })
-      .eq('id', id);
-    if (error) {
-      console.error('Dismiss error:', error.message);
-      // Re-fetch to restore if update failed
-      fetchFeed();
-    }
+    const { error } = await supabase.from('missed_calls').update({ status: 'dismissed' }).eq('id', id);
+    if (error) { console.error('Dismiss error:', error.message); fetchFeed(); }
   }, [fetchFeed]);
 
   const onRefresh = useCallback(async () => {
@@ -329,6 +342,17 @@ export default function FeedScreen() {
   const revenueStr = stats.revenue >= 1000
     ? `$${(stats.revenue / 1000).toFixed(1)}k`
     : `$${stats.revenue}`;
+
+  const renderCard = (item: FeedItem) => {
+    if (item.type === 'missed') {
+      return <MissedCard key={item.id} item={item as MissedCall} vi={vi} onDismiss={handleDismissMissed} />;
+    }
+    const booking = item as Booking;
+    if (booking.status === 'pending_owner') {
+      return <PendingOwnerCard key={item.id} item={booking} vi={vi} onDismiss={handleDismissBooking} />;
+    }
+    return <BookingCard key={item.id} item={booking} vi={vi} />;
+  };
 
   return (
     <SafeAreaView style={[s.root, { backgroundColor: C.bg }]} edges={['top']}>
@@ -389,11 +413,7 @@ export default function FeedScreen() {
               </Text>
             </View>
           ) : (
-            feed.map(item =>
-              item.type === 'booking'
-                ? <BookingCard key={item.id} item={item as Booking} vi={vi} onConfirm={handleConfirm} />
-                : <MissedCard  key={item.id} item={item as MissedCall} vi={vi} onDismiss={handleDismiss} />
-            )
+            feed.map(item => renderCard(item))
           )}
         </ScrollView>
       )}

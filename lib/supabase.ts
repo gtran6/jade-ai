@@ -19,7 +19,8 @@ export interface Booking {
   end_time: string;
   technician_name: string | null;
   calendar_event_id: string | null;
-  status: 'confirmed' | 'pending' | 'cancelled';
+  status: 'confirmed' | 'pending' | 'cancelled' | 'pending_owner';
+  requested_time?: string | null;
   created_at: string;
 }
 
