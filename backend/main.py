@@ -235,65 +235,67 @@ async def vapi_chat(request: Request):
 
             caller_phone = body.get("call", {}).get("customer", {}).get("number", "unknown")
 
-            # ── Slot availability check ──────────────────────────────────
-            if is_slot_available(start_dt, end_dt):
-                # Slot is free — book it
-                cal_id = create_calendar_event(
-                    client_name=data["client_name"],
-                    service=svc_name,
-                    technician=data.get("technician", "any"),
-                    start_iso=start_dt.isoformat(),
-                    end_iso=end_dt.isoformat(),
-                )
-                save_booking(
-                    client_name=data["client_name"],
-                    client_phone=caller_phone,
-                    service=svc_name,
-                    technician=data.get("technician", "any"),
-                    start_iso=start_dt.isoformat(),
-                    end_iso=end_dt.isoformat(),
-                    calendar_event_id=cal_id,
-                    call_id=call_id,
-                    status="confirmed",
-                )
+            # ── Atomic slot booking via Postgres function ────────────────
+            # Create calendar event first (outside the lock)
+            cal_id = create_calendar_event(
+                client_name=data["client_name"],
+                service=svc_name,
+                technician=data.get("technician", "any"),
+                start_iso=start_dt.isoformat(),
+                end_iso=end_dt.isoformat(),
+            )
+
+            result = supabase.rpc("book_slot", {
+                "p_salon_id":          SALON_ID,
+                "p_call_id":           call_id,
+                "p_client_name":       data["client_name"],
+                "p_client_phone":      caller_phone,
+                "p_service":           svc_name,
+                "p_technician":        data.get("technician", "any"),
+                "p_start_time":        start_dt.isoformat(),
+                "p_end_time":          end_dt.isoformat(),
+                "p_calendar_event_id": cal_id,
+            }).execute()
+
+            booking_result = result.data
+            log.info(f"book_slot result: {booking_result}")
+
+            if booking_result == "confirmed":
                 log.info(f"Booking confirmed: {data['client_name']} — {svc_name} at {dt_str}")
                 end_call = True
                 spoken = text.split("BOOKING_COMPLETE:")[0].strip()
-                # Always ensure a clear confirmation is spoken
                 if not spoken:
                     spoken = f"Perfect {data['client_name']}, I have booked your {svc_name} for {start_dt.strftime('%A, %B %d')} at {start_dt.strftime('%I:%M %p')}. We will see you then!"
                 text = spoken
 
-            else:
-                # Slot is taken — but first check if this call_id already has a confirmed booking
-                # (race condition: two concurrent calls, first saved confirmed, second sees slot taken)
-                if call_id:
-                    already_confirmed = supabase.table("bookings").select("id")                         .eq("call_id", call_id).eq("status", "confirmed").execute()
-                    if already_confirmed.data:
-                        log.info(f"Race condition avoided: call_id {call_id} already confirmed, skipping pending_owner")
-                        text = text.split("BOOKING_COMPLETE:")[0].strip()
-                        end_call = True
-                        # Skip to end — slot was actually booked successfully by the concurrent call
-                        # Jump out of this else block
-                        raise ValueError("__skip_pending_owner__")
-
-                # Slot is genuinely taken — save as pending_owner request
-                save_booking(
-                    client_name=data["client_name"],
-                    client_phone=caller_phone,
-                    service=svc_name,
-                    technician=data.get("technician", "any"),
-                    start_iso=start_dt.isoformat(),
-                    end_iso=end_dt.isoformat(),
-                    calendar_event_id=None,
-                    call_id=call_id,
-                    status="pending_owner",
-                    requested_time=dt_str,
-                )
-                log.info(f"Slot taken — pending_owner: {data['client_name']} — {svc_name} at {dt_str}")
-                # Override spoken response
-                end_call = True
-                text = f"I'm sorry {data['client_name']}, that time is already taken. I've noted your request and the salon will call you back to find a new time. Thank you!"
+            elif booking_result == "conflict":
+                # Check if this call_id already confirmed (race condition)
+                already = supabase.table("bookings").select("id") \
+                    .eq("call_id", call_id).eq("status", "confirmed").execute()
+                if already.data:
+                    log.info(f"Race condition: call_id {call_id} already confirmed")
+                    spoken = text.split("BOOKING_COMPLETE:")[0].strip()
+                    if not spoken:
+                        spoken = f"Perfect {data['client_name']}, I have booked your {svc_name} for {start_dt.strftime('%A, %B %d')} at {start_dt.strftime('%I:%M %p')}. We will see you then!"
+                    text = spoken
+                    end_call = True
+                else:
+                    # Genuine conflict
+                    save_booking(
+                        client_name=data["client_name"],
+                        client_phone=caller_phone,
+                        service=svc_name,
+                        technician=data.get("technician", "any"),
+                        start_iso=start_dt.isoformat(),
+                        end_iso=end_dt.isoformat(),
+                        calendar_event_id=None,
+                        call_id=f"{call_id}_pending",
+                        status="pending_owner",
+                        requested_time=dt_str,
+                    )
+                    log.info(f"Slot taken — pending_owner: {data['client_name']} — {svc_name} at {dt_str}")
+                    end_call = True
+                    text = f"I'm sorry {data['client_name']}, that time is already taken. I've noted your request and the salon will call you back to find a new time. Thank you!"
 
         except ValueError as e:
             if "__skip_pending_owner__" in str(e):
