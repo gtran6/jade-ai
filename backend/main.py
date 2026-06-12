@@ -92,7 +92,7 @@ def save_booking(
     technician: str, start_iso: str, end_iso: str,
     calendar_event_id: str | None, call_id: str | None,
     status: str = "confirmed", requested_time: str | None = None
-) -> dict:
+) -> dict | None:
     row = {
         "salon_id":          SALON_ID,
         "call_id":           call_id,
@@ -106,8 +106,14 @@ def save_booking(
         "status":            status,
         "requested_time":    requested_time,
     }
-    res = supabase.table("bookings").insert(row).execute()
-    return res.data[0] if res.data else row
+    try:
+        res = supabase.table("bookings").insert(row).execute()
+        return res.data[0] if res.data else row
+    except Exception as e:
+        if "23505" in str(e) or "duplicate" in str(e).lower():
+            log.warning(f"Duplicate call_id {call_id} — insert blocked by unique constraint")
+            return None
+        raise
 
 def save_missed_call(caller_phone: str, reason: str, transcript: str, call_id: str | None):
     supabase.table("missed_calls").insert({
