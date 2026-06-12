@@ -265,7 +265,19 @@ async def vapi_chat(request: Request):
                 text = spoken
 
             else:
-                # Slot is taken — save as pending_owner request
+                # Slot is taken — but first check if this call_id already has a confirmed booking
+                # (race condition: two concurrent calls, first saved confirmed, second sees slot taken)
+                if call_id:
+                    already_confirmed = supabase.table("bookings").select("id")                         .eq("call_id", call_id).eq("status", "confirmed").execute()
+                    if already_confirmed.data:
+                        log.info(f"Race condition avoided: call_id {call_id} already confirmed, skipping pending_owner")
+                        text = text.split("BOOKING_COMPLETE:")[0].strip()
+                        end_call = True
+                        # Skip to end — slot was actually booked successfully by the concurrent call
+                        # Jump out of this else block
+                        raise ValueError("__skip_pending_owner__")
+
+                # Slot is genuinely taken — save as pending_owner request
                 save_booking(
                     client_name=data["client_name"],
                     client_phone=caller_phone,
@@ -283,6 +295,12 @@ async def vapi_chat(request: Request):
                 end_call = True
                 text = f"I'm sorry {data['client_name']}, that time is already taken. I've noted your request and the salon will call you back to find a new time. Thank you!"
 
+        except ValueError as e:
+            if "__skip_pending_owner__" in str(e):
+                pass  # race condition handled above
+            else:
+                import traceback
+                log.error(f"Booking parse error: {e}\n{traceback.format_exc()}")
         except Exception as e:
             import traceback
             log.error(f"Booking parse error: {e}\n{traceback.format_exc()}")
